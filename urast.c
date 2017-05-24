@@ -3,6 +3,11 @@
 #include <stdbool.h>
 #include <assert.h>
 
+#define noHAS_AVX2
+#ifdef HAS_AVX2
+#include <immintrin.h>
+#endif
+
 #include "urast.h"
 
 static inline bool
@@ -123,6 +128,22 @@ find_bounding_box(const struct triangle *triangle)
 	return b;
 }
 
+#define tile_size 8
+
+static int32_t
+edge_delta_to_tile_min(struct edge e)
+{
+	const int32_t sign_x = (uint32_t) e.a >> 31;
+	const int32_t sign_y = (uint32_t) e.b >> 31;
+
+	const int tile_max_x = tile_size - 1;
+	const int tile_max_y = tile_size - 1;
+
+	/* This is the delta from w in top-left corner to minimum w in tile. */
+
+	return e.a * sign_x * tile_max_x + e.b * sign_y * tile_max_y;
+}
+
 static void
 render_triangle(struct urast_image *image, const struct triangle *triangle)
 {
@@ -143,33 +164,93 @@ render_triangle(struct urast_image *image, const struct triangle *triangle)
 	}
 
 	struct box bbox = find_bounding_box(triangle);
-	const uint32_t start_x = bbox.v[0].x >> 8;
-	const uint32_t start_y = bbox.v[0].y >> 8;
-	const uint32_t end_x = (bbox.v[1].x + 0xff) >> 8;
-	const uint32_t end_y = (bbox.v[1].y + 0xff) >> 8;
+	const uint32_t start_x = (bbox.v[0].x >> 8) & ~(tile_size - 1);
+	const uint32_t start_y = (bbox.v[0].y >> 8) & ~(tile_size - 1);
+	const uint32_t end_x = (((bbox.v[1].x + 0xff) >> 8) + (tile_size - 1)) & ~(tile_size - 1);
+	const uint32_t end_y = (((bbox.v[1].y + 0xff) >> 8) + (tile_size - 1)) & ~(tile_size - 1);
+
+	int32_t d[3];
+	d[0] = edge_delta_to_tile_min(e[0]);
+	d[1] = edge_delta_to_tile_min(e[1]);
+	d[2] = edge_delta_to_tile_min(e[2]);
 
 	int32_t b[3];
-	b[0] = eval_edge(e[0], snap_vertex(start_x, start_y));
-	b[1] = eval_edge(e[1], snap_vertex(start_x, start_y));
-	b[2] = eval_edge(e[2], snap_vertex(start_x, start_y));
+	b[0] = eval_edge(e[0], snap_vertex(start_x, start_y)) + d[0];
+	b[1] = eval_edge(e[1], snap_vertex(start_x, start_y)) + d[1];
+	b[2] = eval_edge(e[2], snap_vertex(start_x, start_y)) + d[2];
+
+#ifdef HAS_AVX2
+	static const int32_t x[8] __attribute__((aligned (32))) = { 0, 1, 2, 3, 4, 5, 6, 7 };
+	__m256i offsets[3];
+	offsets[0] =
+		_mm256_add_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(e[0].a),
+						    _mm256_load_si256((void *) x)),
+				 _mm256_set1_epi32(-d[0]));
+	offsets[1] =
+		_mm256_add_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(e[1].a),
+						    _mm256_load_si256((void *) x)),
+				 _mm256_set1_epi32(-d[1]));
+	offsets[2] =
+		_mm256_add_epi32(_mm256_mullo_epi32(_mm256_set1_epi32(e[2].a),
+						    _mm256_load_si256((void *) x)),
+				 _mm256_set1_epi32(-d[2]));
+#endif
 
 	uint32_t color = 0xff000080 | (rand() & 0xff);
-	for (int32_t y = start_y; y < end_y; y++) {
-
+	for (int32_t y = start_y; y < end_y; y += tile_size) {
 		uint32_t *p = image->data + start_x * 4 + y * image->stride;
-		for (uint32_t x = start_x; x < end_x; x++) {
-			if ((int32_t) (b[0] & b[1] & b[2]) < 0)
-				*p = color;
-			p++;
-			b[0] += e[0].a;
-			b[1] += e[1].a;
-			b[2] += e[2].a;
+		for (uint32_t x = start_x; x < end_x; x += tile_size) {
+			if ((int32_t) (b[0] & b[1] & b[2]) < 0) {
+#ifdef HAS_AVX2
+				__m256i tb[3], c, mask;
+				void *tp = p;
+				tb[0] = _mm256_add_epi32(offsets[0], _mm256_set1_epi32(b[0]));
+				tb[1] = _mm256_add_epi32(offsets[1], _mm256_set1_epi32(b[1]));
+				tb[2] = _mm256_add_epi32(offsets[2], _mm256_set1_epi32(b[2]));
+				c = _mm256_set1_epi32(color);
+
+				for (uint32_t ty = 0; ty < tile_size; ty++) {
+					mask = _mm256_and_si256(_mm256_and_si256(tb[0], tb[1]), tb[2]);
+					_mm256_maskstore_epi32(tp, mask, c);
+					tp += image->stride;
+					tb[0] = _mm256_add_epi32(tb[0], _mm256_set1_epi32(e[0].b));
+					tb[1] = _mm256_add_epi32(tb[1], _mm256_set1_epi32(e[1].b));
+					tb[2] = _mm256_add_epi32(tb[2], _mm256_set1_epi32(e[2].b));
+				}
+#else
+				int32_t tb[3];
+				tb[0] = b[0] - d[0];
+				tb[1] = b[1] - d[1];
+				tb[2] = b[2] - d[2];
+				for (uint32_t ty = 0; ty < tile_size; ty++) {
+					for (uint32_t tx = 0; tx < tile_size; tx++) {
+						if ((int32_t) (tb[0] & tb[1] & tb[2]) < 0)
+							*p = color;
+						p++;
+						tb[0] += e[0].a;
+						tb[1] += e[1].a;
+						tb[2] += e[2].a;
+					}
+					p = (void *) (p - tile_size) + image->stride;
+					tb[0] += e[0].b - e[0].a * tile_size;
+					tb[1] += e[1].b - e[1].a * tile_size;
+					tb[2] += e[2].b - e[2].a * tile_size;
+				}
+
+				p = (void *) p - tile_size * image->stride;
+#endif
+			}
+
+			p += tile_size;
+			b[0] += tile_size * e[0].a;
+			b[1] += tile_size * e[1].a;
+			b[2] += tile_size * e[2].a;
 		}
 
 		uint32_t span_width = end_x - start_x;
-		b[0] += e[0].b - e[0].a * span_width;
-		b[1] += e[1].b - e[1].a * span_width;
-		b[2] += e[2].b - e[2].a * span_width;
+		b[0] += tile_size * e[0].b - e[0].a * span_width;
+		b[1] += tile_size * e[1].b - e[1].a * span_width;
+		b[2] += tile_size * e[2].b - e[2].a * span_width;
 	}
 }
 
