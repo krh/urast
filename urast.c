@@ -1,8 +1,5 @@
 #include <stdint.h>
 #include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <assert.h>
 
@@ -119,12 +116,17 @@ render_triangle(struct urast_image *image, const struct triangle *triangle)
 		e[2] = edge(triangle->v[0], triangle->v[2]);
 	}
 
+	int32_t b[3];
+	b[0] = eval_edge(e[0], snap_vertex(0.0f, 0.0f));
+	b[1] = eval_edge(e[1], snap_vertex(0.0f, 0.0f));
+	b[2] = eval_edge(e[2], snap_vertex(0.0f, 0.0f));
+	int32_t row_step[3];
+	row_step[0] = -e[0].a * image->width + e[0].b;
+	row_step[1] = -e[1].a * image->width + e[1].b;
+	row_step[2] = -e[2].a * image->width + e[2].b;
+
 	uint32_t color = 0xff000080 | (rand() & 0xff);
 	for (int32_t y = 0; y < image->height; y++) {
-		int32_t b[3];
-		b[0] = eval_edge(e[0], snap_vertex(0.0f, y));
-		b[1] = eval_edge(e[1], snap_vertex(0.0f, y));
-		b[2] = eval_edge(e[2], snap_vertex(0.0f, y));
 
 		uint32_t *p = image->data + y * image->stride;
 		for (int32_t x = 0; x < image->width; x++, p++) {
@@ -135,6 +137,10 @@ render_triangle(struct urast_image *image, const struct triangle *triangle)
 			b[1] += e[1].a;
 			b[2] += e[2].a;
 		}
+		b[0] += row_step[0];
+		b[1] += row_step[1];
+		b[2] += row_step[2];
+
 	}
 }
 
