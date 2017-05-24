@@ -61,17 +61,13 @@ void urast_free_image(struct urast_image *image)
 }
 
 struct vertex {
-	float x, y;
-};
-
-struct fixed_vertex {
 	int32_t x, y;
 };
 
-static inline struct fixed_vertex
+static inline struct vertex
 snap_vertex(float x, float y)
 {
-	return (struct fixed_vertex) {
+	return (struct vertex) {
 		.x = (int32_t) (x * 256.0f),
 		.y = (int32_t) (y * 256.0f)
 	};
@@ -82,7 +78,7 @@ struct edge {
 };
 
 static inline struct edge
-edge(struct fixed_vertex p0, struct fixed_vertex p1)
+edge(struct vertex p0, struct vertex p1)
 {
 	struct edge e;
 
@@ -95,13 +91,13 @@ edge(struct fixed_vertex p0, struct fixed_vertex p1)
 }
 
 static inline int
-eval_edge(struct edge e, struct fixed_vertex v)
+eval_edge(struct edge e, struct vertex v)
 {
 	return (((int64_t) e.a * v.x + (int64_t) e.b * v.y) >> 8) + e.c - e.bias;
 }
 
 struct triangle {
-	struct fixed_vertex v[3];
+	struct vertex v[3];
 };
 
 static void
