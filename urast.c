@@ -97,6 +97,32 @@ struct triangle {
 	struct vertex v[3];
 };
 
+struct box {
+	struct vertex v[2];
+};
+
+static inline struct box
+find_bounding_box(const struct triangle *triangle)
+{
+	struct box b;
+
+	b.v[0] = triangle->v[0];
+	b.v[1] = triangle->v[0];
+
+	for (uint32_t i = 1; i < 3; i++) {
+		if (triangle->v[i].x < b.v[0].x)
+			b.v[0].x = triangle->v[i].x;
+		if (triangle->v[i].y < b.v[0].y)
+			b.v[0].y = triangle->v[i].y;
+		if (triangle->v[i].x > b.v[1].x)
+			b.v[1].x = triangle->v[i].x;
+		if (triangle->v[i].y > b.v[1].y)
+			b.v[1].y = triangle->v[i].y;
+	}
+
+	return b;
+}
+
 static void
 render_triangle(struct urast_image *image, const struct triangle *triangle)
 {
@@ -116,31 +142,34 @@ render_triangle(struct urast_image *image, const struct triangle *triangle)
 		e[2] = edge(triangle->v[0], triangle->v[2]);
 	}
 
+	struct box bbox = find_bounding_box(triangle);
+	const uint32_t start_x = bbox.v[0].x >> 8;
+	const uint32_t start_y = bbox.v[0].y >> 8;
+	const uint32_t end_x = (bbox.v[1].x + 0xff) >> 8;
+	const uint32_t end_y = (bbox.v[1].y + 0xff) >> 8;
+
 	int32_t b[3];
-	b[0] = eval_edge(e[0], snap_vertex(0.0f, 0.0f));
-	b[1] = eval_edge(e[1], snap_vertex(0.0f, 0.0f));
-	b[2] = eval_edge(e[2], snap_vertex(0.0f, 0.0f));
-	int32_t row_step[3];
-	row_step[0] = -e[0].a * image->width + e[0].b;
-	row_step[1] = -e[1].a * image->width + e[1].b;
-	row_step[2] = -e[2].a * image->width + e[2].b;
+	b[0] = eval_edge(e[0], snap_vertex(start_x, start_y));
+	b[1] = eval_edge(e[1], snap_vertex(start_x, start_y));
+	b[2] = eval_edge(e[2], snap_vertex(start_x, start_y));
 
 	uint32_t color = 0xff000080 | (rand() & 0xff);
-	for (int32_t y = 0; y < image->height; y++) {
+	for (int32_t y = start_y; y < end_y; y++) {
 
-		uint32_t *p = image->data + y * image->stride;
-		for (int32_t x = 0; x < image->width; x++, p++) {
+		uint32_t *p = image->data + start_x * 4 + y * image->stride;
+		for (uint32_t x = start_x; x < end_x; x++) {
 			if ((int32_t) (b[0] & b[1] & b[2]) < 0)
 				*p = color;
-
+			p++;
 			b[0] += e[0].a;
 			b[1] += e[1].a;
 			b[2] += e[2].a;
 		}
-		b[0] += row_step[0];
-		b[1] += row_step[1];
-		b[2] += row_step[2];
 
+		uint32_t span_width = end_x - start_x;
+		b[0] += e[0].b - e[0].a * span_width;
+		b[1] += e[1].b - e[1].a * span_width;
+		b[2] += e[2].b - e[2].a * span_width;
 	}
 }
 
