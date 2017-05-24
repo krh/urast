@@ -1,5 +1,7 @@
+#include <stdlib.h>
 #include <libpng16/png.h>
 #include <math.h>
+#include <time.h>
 
 #include "urast.h"
 
@@ -8,6 +10,10 @@ const uint32_t black = 0xff000000;
 int main(int argc, char *argv[])
 {
 	struct urast_image *image = urast_create_image(800, 500);
+	int iterations = 1;
+
+	if (argc == 2)
+		iterations = atoi(argv[1]);
 
 	urast_clear(image, black);
 
@@ -34,7 +40,18 @@ int main(int argc, char *argv[])
 		p += 4;
 	};
 
-	urast_render(image, URAST_TRIANGLE_STRIP, vb, 2 * count);
+	struct timespec begin, end;
+	clock_gettime(CLOCK_MONOTONIC_RAW, &begin);
+
+	for (uint32_t i = 0; i < iterations; i++)
+		urast_render(image, URAST_TRIANGLE_STRIP, vb, 2 * count);
+
+	clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+	if (iterations > 1) {
+		int64_t begin_ms = begin.tv_sec * 1000 + begin.tv_nsec / 1000000;
+		int64_t end_ms = end.tv_sec * 1000 + end.tv_nsec / 1000000;
+		printf("elapsed time for %d iterations: %ldms\n", iterations, end_ms - begin_ms);
+	}
 
 	png_image pi = {
 		.version = PNG_IMAGE_VERSION,
@@ -43,8 +60,8 @@ int main(int argc, char *argv[])
 		.format = PNG_FORMAT_RGBA
 	};
 
-	if (png_image_write_to_file(&pi, "test.png", 0, image->data, image->stride, NULL) == 0)
-		return -1;
+	if (iterations == 1)
+		png_image_write_to_file(&pi, "test.png", 0, image->data, image->stride, NULL);
 
 	urast_free_image(image);
 
